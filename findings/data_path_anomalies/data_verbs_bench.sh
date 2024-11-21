@@ -1,16 +1,18 @@
 #!/bin/bash
 
-if [ "$#" -ne 5 ]; then
-    echo "Error: Five parameters are required."
-    echo "Usage: $0 <operation: send/write/read> <type: bw/lat> <message size> <qp num> <test comment>"
-    echo "Example: $0 send bw 1024 1 bw_test"ls
+if [ "$#" -ne 7 ]; then
+    echo "Error: Seven parameters are required."
+    echo "Usage: $0 <cpu id> <operation: send/write/read> <type: bw/lat> <message size> <qp num> <port> <test comment>"
+    echo "Example: $0 2 send bw 1024 1 90000 bw_test"ls
     exit 1
 fi
 
 TAG=$(date +%Y%m%d-%H%M%S)
 
-BINDS="numactl --physcpubind=2 "
-BINDC="numactl --physcpubind=2 "
+CPU=$1
+
+BINDS="numactl --physcpubind=${CPU} "
+BINDC="numactl --physcpubind=${CPU} "
 
 # server ip
 DEST="phx@115.157.197.8"
@@ -19,34 +21,39 @@ DEST="phx@115.157.197.8"
 RNICDEST="192.11.11.106"
 
 # get data operation
-OPERATION=$1
-TYPE=$2
+OPERATION=$2
+TYPE=$3
 
 # test case of perftest
 PERFCASE="ib_${OPERATION}_${TYPE}"
 
 # exchange message size
-SIZE=$3
+SIZE=$4
 
 # test qp num
-QPNUM=$4
+QPNUM=$5
+
+PORT=$6
 
 # test comment
-COMMENT=$5
+COMMENT=$7
+
+
 
 if [ "$TYPE" = "bw" ]; then
     # server side cmd
-    SCMD="/home/phx/MTRDMA/perftest-v4.5-0.20/${PERFCASE} -F --report_gbits --run_infinitely -d mlx5_1 -D 1 -s ${SIZE} -q ${QPNUM}"
+    SCMD="/home/phx/MTRDMA/perftest-v4.5-0.20/${PERFCASE} -F --report_gbits --run_infinitely -d mlx5_1 -D 1 -s ${SIZE} -q ${QPNUM} -p ${PORT}"
 
     # client side cmd
-    CCMD="/home/phx/MTRDMA/perftest-v4.5-0.20/${PERFCASE} -F --report_gbits --run_infinitely -d mlx5_1 -D 1 -s ${SIZE} ${RNICDEST} -q ${QPNUM}"
+    CCMD="/home/phx/MTRDMA/perftest-v4.5-0.20/${PERFCASE} -F --report_gbits --run_infinitely -d mlx5_1 -D 1 -s ${SIZE} ${RNICDEST} -q ${QPNUM} -p ${PORT}"
 else
-    SCMD="/home/phx/MTRDMA/perftest-v4.5-0.20/${PERFCASE} -F -d mlx5_1 -s ${SIZE}"
+    SCMD="/home/phx/MTRDMA/perftest-v4.5-0.20/${PERFCASE} -F -d mlx5_1 -s ${SIZE} -p ${PORT}"
 
-    CCMD="/home/phx/MTRDMA/perftest-v4.5-0.20/${PERFCASE} -F -d mlx5_1 -s ${SIZE} ${RNICDEST}"
+    CCMD="/home/phx/MTRDMA/perftest-v4.5-0.20/${PERFCASE} -F -d mlx5_1 -s ${SIZE} ${RNICDEST} -p ${PORT}"
 fi
 
-# Execute send operation
-$BINDS $SCMD > /dev/null & ssh $DEST "timeout 10 $BINDC $CCMD " 2>&1 | tee ./logs/log-${PERFCASE}-${COMMENT}-${TAG}.txt
+# create directory
+mkdir -p "/home/phx/MTRDMA/findings/data_path_anomalies/logs"
 
-pkill $PERFCASE
+# Execute send operation
+$BINDS $SCMD > /dev/null & ssh $DEST "timeout 10 $BINDC $CCMD " 2>&1 > ./logs/log-${PERFCASE}-${COMMENT}-${TAG}.txt
