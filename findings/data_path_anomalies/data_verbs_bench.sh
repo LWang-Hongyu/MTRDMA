@@ -1,9 +1,9 @@
 #!/bin/bash
 
-if [ "$#" -ne 7 ]; then
-    echo "Error: Seven parameters are required."
-    echo "Usage: $0 <cpu id> <operation: send/write/read> <type: bw/lat> <message size> <qp num> <port> <test comment>"
-    echo "Example: $0 2 send bw 1024 1 90000 bw_test"ls
+if [ "$#" -ne 9 ]; then
+    echo "Error: Nine parameters are required."
+    echo "Usage: $0 <cpu id> <operation: send/write/read> <type: bw/lat> <message size> <qp num> <port> <action time> <test comment> <log dir>"
+    echo "Example: $0 2 send bw 1024 1 90000 10 bw_test <log dir>"
     exit 1
 fi
 
@@ -35,10 +35,14 @@ QPNUM=$5
 
 PORT=$6
 
+# action time
+TIME=$7
+
 # test comment
-COMMENT=$7
+COMMENT=$8
 
-
+# log dir
+LOGDIR=$9
 
 if [ "$TYPE" = "bw" ]; then
     # server side cmd
@@ -52,8 +56,5 @@ else
     CCMD="/home/phx/MTRDMA/perftest-v4.5-0.20/${PERFCASE} -F -d mlx5_1 -s ${SIZE} ${RNICDEST} -p ${PORT}"
 fi
 
-# create directory
-mkdir -p "/home/phx/MTRDMA/findings/data_path_anomalies/logs"
-
 # Execute send operation
-$BINDS $SCMD > /dev/null & ssh $DEST "timeout 10 $BINDC $CCMD " 2>&1 > ./logs/log-${PERFCASE}-${COMMENT}-${TAG}.txt
+$BINDS $SCMD > /dev/null & ssh $DEST "timeout $TIME $BINDC $CCMD " 2>&1 > ${LOGDIR}/log-${PERFCASE}-${COMMENT}-${TAG}.txt
