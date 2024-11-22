@@ -7,6 +7,10 @@ if [ "$#" -ne 2 ]; then
     exit 1
 fi
 
+PERFCASE=ib_write_bw
+
+pkill $PERFCASE
+
 # get parameters
 FILE=$0
 SIDE=$1
@@ -15,22 +19,32 @@ TIME=$2
 # create directory
 LOGDIR="/home/phx/MTRDMA/findings/data_path_anomalies/logs/${FILE%.sh}_logs"
 
-mkdir -p $LOGDIR
+if [ "$SIDE" = "client" ]; then
+    mkdir -p $LOGDIR
+    rm -f $LOGDIR/*
+fi
 
 SIZE=16
 
-for i in $(seq 0 2 8)
+for i in $(seq 0 2 0)
 do
     if [ "$SIDE" = "server" ]; then
         # server side cmd
-        CMD="numactl --physcpubind=$i /home/phx/MTRDMA/perftest-v4.5-0.20/ib_write_bw -F --report_gbits --run_infinitely -d mlx5_1 -D 1 -s ${SIZE} -q 1 -p $((i + 90000)) > /dev/null & "
+        numactl --physcpubind=$i /home/phx/MTRDMA/perftest-v4.5-0.20/ib_write_bw -F --report_gbits --run_infinitely -d mlx5_1 -D 1 -s ${SIZE} -q 1 -p $((i + 90000)) > /dev/null &
     else
-        CMD="numactl --physcpubind=$i /home/phx/MTRDMA/perftest-v4.5-0.20/ib_write_bw -F --report_gbits --run_infinitely -d mlx5_1 -D 1 -s ${SIZE} -q 1 -p $((i + 90000)) 192.11.11.108 > ${LOGDIR}/log-ib_write_bw-test-cpu_$i.txt &"
+        numactl --physcpubind=$i /home/phx/MTRDMA/perftest-v4.5-0.20/ib_write_bw -F --report_gbits --run_infinitely -d mlx5_1 -D 1 -s ${SIZE} -q 1 -p $((i + 90000)) 192.11.11.108 > ${LOGDIR}/log-ib_write_bw-test-cpu_$i.txt &
     fi
 done
 
+numactl --physcpubind=38 /home/phx/MTRDMA/perftest-v4.5-0.20/ib_write_bw -F --report_gbits --run_infinitely -d mlx5_1 -D 1 -s 4096 -q 1 -p 90038 192.11.11.108 > ${LOGDIR}/log-ib_write_bw-test-cpu_38.txt &
+
 if [ "$SIDE" = "client" ]; then
     sleep $TIME
+    pkill ib_write_bw
+
+    bash /home/phx/MTRDMA/findings/data_path_anomalies/logs/statistical_data.sh
+else
+    sleep $((TIME + 5))
     pkill ib_write_bw
 fi
 
