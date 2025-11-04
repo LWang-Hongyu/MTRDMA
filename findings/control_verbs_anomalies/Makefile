@@ -1,6 +1,6 @@
 .PHONY: clean
 
-APPS    := rdma_client
+APPS    := rdma_client rdma_server
 
 CFLAGS  := -Wall -g 
 LDLIBS  := ${LDLIBS} -I/home/phx/MTRDMA/rdma-core-58mlnx43/build/include -L/home/phx/MTRDMA/rdma-core-58mlnx43/build/lib -lpthread -lrdmacm -libverbs -lcrypto

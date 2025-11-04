@@ -1,0 +1,2 @@
+make
+./rdma_monitor

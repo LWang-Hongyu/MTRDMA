@@ -46,6 +46,8 @@
 #include "mlx5.h"
 #include "wqe.h"
 
+#include "mtrdma.h"
+
 enum {
 	CQ_OK					=  0,
 	CQ_EMPTY				= -1,

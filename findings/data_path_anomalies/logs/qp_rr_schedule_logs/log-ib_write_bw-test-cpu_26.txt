@@ -1,0 +1,65 @@
+ WARNING: BW peak won't be measured in this run.
+---------------------------------------------------------------------------------------
+                    RDMA_Write BW Test
+ Dual-port       : OFF		Device         : mlx5_1
+ Number of qps   : 10		Transport type : IB
+ Connection type : RC		Using SRQ      : OFF
+ PCIe relax order: ON		Lock-free      : OFF
+ ibv_wr* API     : ON		Using DDP      : OFF
+ TX depth        : 128
+ CQ Moderation   : 100
+ Mtu             : 1024[B]
+ Link type       : Ethernet
+ GID index       : 3
+ Max inline data : 0[B]
+ rdma_cm QPs	 : OFF
+ Data ex. method : Ethernet
+---------------------------------------------------------------------------------------
+ local address: LID 0000 QPN 0x84cb PSN 0x7eb00b RKey 0x23b14a VAddr 0x0055fbeb989000
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:11:11:106
+ local address: LID 0000 QPN 0x84d9 PSN 0x64099 RKey 0x23b14a VAddr 0x0055fbeb98a000
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:11:11:106
+ local address: LID 0000 QPN 0x84ed PSN 0x30786f RKey 0x23b14a VAddr 0x0055fbeb98b000
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:11:11:106
+ local address: LID 0000 QPN 0x84fe PSN 0x51a092 RKey 0x23b14a VAddr 0x0055fbeb98c000
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:11:11:106
+ local address: LID 0000 QPN 0x8515 PSN 0xe403d RKey 0x23b14a VAddr 0x0055fbeb98d000
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:11:11:106
+ local address: LID 0000 QPN 0x852e PSN 0x9c7d5b RKey 0x23b14a VAddr 0x0055fbeb98e000
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:11:11:106
+ local address: LID 0000 QPN 0x854b PSN 0xee31e RKey 0x23b14a VAddr 0x0055fbeb98f000
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:11:11:106
+ local address: LID 0000 QPN 0x8567 PSN 0xd0e3bf RKey 0x23b14a VAddr 0x0055fbeb990000
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:11:11:106
+ local address: LID 0000 QPN 0x8581 PSN 0x716bf7 RKey 0x23b14a VAddr 0x0055fbeb991000
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:11:11:106
+ local address: LID 0000 QPN 0x8597 PSN 0xc55fad RKey 0x23b14a VAddr 0x0055fbeb992000
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:11:11:106
+ remote address: LID 0000 QPN 0x8908 PSN 0xfb7212 RKey 0x08f486 VAddr 0x0056048eae0000
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:11:11:108
+ remote address: LID 0000 QPN 0x8915 PSN 0xeb2794 RKey 0x08f486 VAddr 0x0056048eae1000
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:11:11:108
+ remote address: LID 0000 QPN 0x8927 PSN 0x90534e RKey 0x08f486 VAddr 0x0056048eae2000
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:11:11:108
+ remote address: LID 0000 QPN 0x8935 PSN 0x5a2b85 RKey 0x08f486 VAddr 0x0056048eae3000
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:11:11:108
+ remote address: LID 0000 QPN 0x894d PSN 0x8bbbb4 RKey 0x08f486 VAddr 0x0056048eae4000
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:11:11:108
+ remote address: LID 0000 QPN 0x8960 PSN 0xaaf906 RKey 0x08f486 VAddr 0x0056048eae5000
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:11:11:108
+ remote address: LID 0000 QPN 0x897c PSN 0xf92ced RKey 0x08f486 VAddr 0x0056048eae6000
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:11:11:108
+ remote address: LID 0000 QPN 0x8996 PSN 0xb64ae2 RKey 0x08f486 VAddr 0x0056048eae7000
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:11:11:108
+ remote address: LID 0000 QPN 0x89aa PSN 0xbc7de RKey 0x08f486 VAddr 0x0056048eae8000
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:11:11:108
+ remote address: LID 0000 QPN 0x89c7 PSN 0x40b08 RKey 0x08f486 VAddr 0x0056048eae9000
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:11:11:108
+---------------------------------------------------------------------------------------
+ #bytes     #iterations    BW peak[Gb/sec]    BW average[Gb/sec]   MsgRate[Mpps]
+ 1024       301100           0.00               2.41   		     0.294252
+ 1024       236600           0.00               1.94   		     0.236594
+ 1024       259900           0.00               2.13   		     0.259894
+ 1024       274000           0.00               2.24   		     0.274001
+ 1024       321600           0.00               2.63   		     0.321596
+ 1024       318500           0.00               2.61   		     0.318495

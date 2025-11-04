@@ -44,6 +44,8 @@ publish_headers(infiniband
   ../../kernel-headers/rdma/mlx5_user_ioctl_verbs.h
   mlx5_api.h
   mlx5dv.h
+  mtrdma.h
+  khash.h
 )
 
 rdma_pkg_config("mlx5" "libibverbs" "${CMAKE_THREAD_LIBS_INIT}")

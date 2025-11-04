@@ -1,0 +1,38 @@
+ WARNING: BW peak won't be measured in this run.
+---------------------------------------------------------------------------------------
+                    Send BW Test
+ Dual-port       : OFF		Device         : mlx5_1
+ Number of qps   : 3		Transport type : IB
+ Connection type : RC		Using SRQ      : OFF
+ PCIe relax order: ON		Lock-free      : OFF
+ ibv_wr* API     : ON		Using DDP      : OFF
+ TX depth        : 128
+ CQ Moderation   : 100
+ Mtu             : 1024[B]
+ Link type       : Ethernet
+ GID index       : 3
+ Max inline data : 0[B]
+ rdma_cm QPs	 : OFF
+ Data ex. method : Ethernet
+---------------------------------------------------------------------------------------
+ local address: LID 0000 QPN 0x1314 PSN 0x7a07f4
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:11:11:108
+ local address: LID 0000 QPN 0x1315 PSN 0xd204ce
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:11:11:108
+ local address: LID 0000 QPN 0x1316 PSN 0x16a100
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:11:11:108
+ remote address: LID 0000 QPN 0x0655 PSN 0x129e86
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:11:11:106
+ remote address: LID 0000 QPN 0x0656 PSN 0xa94cf8
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:11:11:106
+ remote address: LID 0000 QPN 0x0657 PSN 0x4e16e2
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:11:11:106
+---------------------------------------------------------------------------------------
+ #bytes     #iterations    BW peak[Gb/sec]    BW average[Gb/sec]   MsgRate[Mpps]
+ 1024       2302300          0.00               18.64  		     2.274909
+ 1024       2268800          0.00               18.59  		     2.268759
+ 1024       2265900          0.00               18.56  		     2.265869
+ 1024       2282700          0.00               18.70  		     2.282647
+ 1024       2271000          0.00               18.60  		     2.270956
+ 1024       2305800          0.00               18.89  		     2.305770
+ 1024       2290900          0.00               18.77  		     2.290876
