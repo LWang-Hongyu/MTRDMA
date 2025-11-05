@@ -67,6 +67,23 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 	return 0;
 }
 
+// Function to print current timestamp
+static void print_timestamp() {
+	time_t now;
+	struct tm *tm_info;
+	char timestamp[26];
+	
+	time(&now);
+	tm_info = localtime(&now);
+	strftime(timestamp, 26, "%Y-%m-%d %H:%M:%S", tm_info);
+	printf("[%s] ", timestamp);
+}
+
+// Function to print separator line
+static void print_separator() {
+	printf("==================================================\n");
+}
+
 // Function to print current resource counts
 static void print_resource_counts(struct resource_stats *stats) {
 	// Only print if there's a change or this is the first time
@@ -75,12 +92,16 @@ static void print_resource_counts(struct resource_stats *stats) {
 	    stats->cq_count != prev_stats.cq_count ||
 	    stats->mr_count != prev_stats.mr_count) {
 	    
-		printf("\n=== RDMA Resource Counts ===\n");
+		print_separator();
+		print_timestamp();
+		printf("RDMA Resource Counts:\n");
+		print_separator();
 		printf("QP (Queue Pairs):     %llu\n", stats->qp_count);
 		printf("PD (Protection Domains): %llu\n", stats->pd_count);
 		printf("CQ (Completion Queues): %llu\n", stats->cq_count);
 		printf("MR (Memory Regions):  %llu\n", stats->mr_count);
-		printf("============================\n\n");
+		print_separator();
+		printf("\n");
 		
 		// Update previous stats
 		prev_stats = *stats;
@@ -108,7 +129,9 @@ static void print_cgroup_stats(int cgroup_map_fd) {
 			
 			if (has_counts) {
 				if (!has_data) {
-					printf("\n=== Per-Cgroup RDMA Statistics ===\n");
+					print_timestamp();
+					printf("Per-Cgroup RDMA Statistics:\n");
+					print_separator();
 					has_data = true;
 				}
 				
@@ -125,7 +148,8 @@ static void print_cgroup_stats(int cgroup_map_fd) {
 	}
 	
 	if (has_data) {
-		printf("==================================\n\n");
+		print_separator();
+		printf("\n");
 	}
 }
 
@@ -184,6 +208,10 @@ int main(int argc, char **argv)
 	printf("%-16s %-8s %s\n",
 		   "COMM", "PID", "TYPE");
 	*/
+	printf("RDMA Control Path Monitor Started\n");
+	print_separator();
+	printf("\n");
+	
 	while (!exiting)
 	{
 		err = ring_buffer__poll(rb, 100 /* timeout, ms */);
@@ -208,6 +236,11 @@ int main(int argc, char **argv)
 		/* Display per-cgroup statistics */
 		print_cgroup_stats(cgroup_map_fd);
 	}
+	
+	print_separator();
+	print_timestamp();
+	printf("RDMA Control Path Monitor Stopped\n");
+	print_separator();
 
 cleanup:
 	/* Clean up */
