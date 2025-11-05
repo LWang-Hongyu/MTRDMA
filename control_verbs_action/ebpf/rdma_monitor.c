@@ -29,10 +29,11 @@ static struct interception_config intercept_config = {0};
 static void print_separator();
 static void print_timestamp();
 static int parse_config_file(const char *filename);
-static bool should_intercept(enum rdma_monitor_type type, unsigned long frequency, unsigned long total_count);
+static bool should_intercept_resource(enum rdma_resource_type resource_type, unsigned long resource_count);
+static bool should_intercept_frequency(enum rdma_monitor_type verb_type, unsigned long frequency);
 static void print_interception_config();
 static void print_resource_counts(struct resource_stats *stats);
-static void print_cgroup_stats(int cgroup_map_fd);
+static void print_cgroup_stats(int cgroup_map_fd, int resource_map_fd);
 static void print_frequency_stats(struct resource_stats *current_stats, struct resource_stats *prev_stats_copy);
 
 // Function to parse command line arguments
@@ -93,9 +94,11 @@ static int parse_config_file(const char *filename) {
 	if (!file) {
 		fprintf(stderr, "Warning: Could not open config file %s, using default thresholds\n", filename);
 		// Set default thresholds
+		for (int i = 0; i < RDMA_RESOURCE_MAX; i++) {
+			intercept_config.max_resource_count[i] = 0;  // Disable by default
+		}
 		for (int i = 0; i < RDMA_MONITOR_TYPE_MAX; i++) {
 			intercept_config.max_frequency[i] = 0;  // Disable by default
-			intercept_config.max_total_count[i] = 0; // Disable by default
 		}
 		return -1;
 	}
@@ -107,29 +110,38 @@ static int parse_config_file(const char *filename) {
 			continue;
 		}
 
-		char verb_name[32];
-		long max_freq, max_count;
-		int matched = sscanf(line, "%31s %ld %ld", verb_name, &max_freq, &max_count);
+		char name[32];
+		long value;
+		int matched = sscanf(line, "%31s %ld", name, &value);
 		
-		if (matched != 3) {
+		if (matched != 2) {
 			fprintf(stderr, "Warning: Invalid config line: %s", line);
 			continue;
 		}
 
-		// Find matching verb type
-		enum rdma_monitor_type verb_type = RDMA_MONITOR_TYPE_MAX;
-		for (int i = 0; i < MAX_VERBS; i++) {
-			if (strcmp(verb_name, rdma_verb_names[i]) == 0) {
-				verb_type = i;
+		// Check if it's a resource type
+		bool found = false;
+		for (int i = 0; i < RDMA_RESOURCE_MAX; i++) {
+			if (strcmp(name, rdma_resource_names[i]) == 0) {
+				intercept_config.max_resource_count[i] = value;
+				found = true;
 				break;
 			}
 		}
+		
+		// If not a resource type, check if it's a verb type
+		if (!found) {
+			for (int i = 0; i < RDMA_MONITOR_TYPE_MAX; i++) {
+				if (strcmp(name, rdma_verb_names[i]) == 0) {
+					intercept_config.max_frequency[i] = value;
+					found = true;
+					break;
+				}
+			}
+		}
 
-		if (verb_type != RDMA_MONITOR_TYPE_MAX) {
-			intercept_config.max_frequency[verb_type] = max_freq;
-			intercept_config.max_total_count[verb_type] = max_count;
-		} else {
-			fprintf(stderr, "Warning: Unknown verb name in config: %s\n", verb_name);
+		if (!found) {
+			fprintf(stderr, "Warning: Unknown name in config: %s\n", name);
 		}
 	}
 
@@ -137,18 +149,21 @@ static int parse_config_file(const char *filename) {
 	return 0;
 }
 
-// Function to check if interception is needed
-static bool should_intercept(enum rdma_monitor_type type, unsigned long frequency, unsigned long total_count) {
-	// Check frequency threshold
-	if (intercept_config.max_frequency[type] > 0 && frequency > intercept_config.max_frequency[type]) {
+// Function to check if resource count based interception is needed
+static bool should_intercept_resource(enum rdma_resource_type resource_type, unsigned long resource_count) {
+	if (intercept_config.max_resource_count[resource_type] > 0 && 
+	    resource_count > intercept_config.max_resource_count[resource_type]) {
 		return true;
 	}
-	
-	// Check total count threshold
-	if (intercept_config.max_total_count[type] > 0 && total_count > intercept_config.max_total_count[type]) {
+	return false;
+}
+
+// Function to check if frequency based interception is needed
+static bool should_intercept_frequency(enum rdma_monitor_type verb_type, unsigned long frequency) {
+	if (intercept_config.max_frequency[verb_type] > 0 && 
+	    frequency > intercept_config.max_frequency[verb_type]) {
 		return true;
 	}
-	
 	return false;
 }
 
@@ -200,20 +215,43 @@ static void print_interception_config() {
 	printf("Interception Configuration:\n");
 	print_separator();
 	
-	for (int i = 0; i < RDMA_MONITOR_TYPE_MAX; i++) {
-		if (intercept_config.max_frequency[i] == 0 && intercept_config.max_total_count[i] == 0) {
-			continue; // Skip if both are disabled
+	// Print resource count based interception config
+	printf("Resource Count Based Interception:\n");
+	for (int i = 0; i < RDMA_RESOURCE_MAX; i++) {
+		if (intercept_config.max_resource_count[i] > 0) {
+			printf("  %-15s: >%llu\n", rdma_resource_names[i], 
+			       (unsigned long long)intercept_config.max_resource_count[i]);
 		}
-		
-		printf("%-25s: Frequency=%s%llu/s%s, Total=%s%llu%s\n",
-		       rdma_monitor_tpye_str(i),
-		       (intercept_config.max_frequency[i] == 0) ? "" : ">",
-		       (unsigned long long)intercept_config.max_frequency[i],
-		       (intercept_config.max_frequency[i] == 0) ? "DISABLED" : "",
-		       (intercept_config.max_total_count[i] == 0) ? "" : ">",
-		       (unsigned long long)intercept_config.max_total_count[i],
-		       (intercept_config.max_total_count[i] == 0) ? "DISABLED" : "");
 	}
+	
+	// Print frequency based interception config
+	printf("Frequency Based Interception:\n");
+	for (int i = 0; i < RDMA_MONITOR_TYPE_MAX; i++) {
+		if (intercept_config.max_frequency[i] > 0) {
+			printf("  %-15s: >%llu/s\n", rdma_verb_names[i], 
+			       (unsigned long long)intercept_config.max_frequency[i]);
+		}
+	}
+	
+	// Print disabled interceptions
+	printf("Disabled Interceptions:\n");
+	bool has_disabled = false;
+	for (int i = 0; i < RDMA_RESOURCE_MAX; i++) {
+		if (intercept_config.max_resource_count[i] == 0) {
+			printf("  %-15s: DISABLED\n", rdma_resource_names[i]);
+			has_disabled = true;
+		}
+	}
+	for (int i = 0; i < RDMA_MONITOR_TYPE_MAX; i++) {
+		if (intercept_config.max_frequency[i] == 0) {
+			printf("  %-15s: DISABLED\n", rdma_verb_names[i]);
+			has_disabled = true;
+		}
+	}
+	if (!has_disabled) {
+		printf("  (None)\n");
+	}
+	
 	print_separator();
 	printf("\n");
 }
@@ -230,10 +268,17 @@ static void print_resource_counts(struct resource_stats *stats) {
 		print_timestamp();
 		printf("RDMA Resource Counts:\n");
 		print_separator();
-		printf("QP (Queue Pairs):     %llu\n", stats->qp_count);
-		printf("PD (Protection Domains): %llu\n", stats->pd_count);
-		printf("CQ (Completion Queues): %llu\n", stats->cq_count);
-		printf("MR (Memory Regions):  %llu\n", stats->mr_count);
+		
+		// Check for resource-based interceptions
+		bool qp_intercept = should_intercept_resource(RDMA_RESOURCE_QP, stats->qp_count);
+		bool pd_intercept = should_intercept_resource(RDMA_RESOURCE_PD, stats->pd_count);
+		bool cq_intercept = should_intercept_resource(RDMA_RESOURCE_CQ, stats->cq_count);
+		bool mr_intercept = should_intercept_resource(RDMA_RESOURCE_MR, stats->mr_count);
+		
+		printf("QP (Queue Pairs):     %llu %s\n", stats->qp_count, qp_intercept ? "(*** INTERCEPTED ***)" : "");
+		printf("PD (Protection Domains): %llu %s\n", stats->pd_count, pd_intercept ? "(*** INTERCEPTED ***)" : "");
+		printf("CQ (Completion Queues): %llu %s\n", stats->cq_count, cq_intercept ? "(*** INTERCEPTED ***)" : "");
+		printf("MR (Memory Regions):  %llu %s\n", stats->mr_count, mr_intercept ? "(*** INTERCEPTED ***)" : "");
 		print_separator();
 		printf("\n");
 		
@@ -243,7 +288,7 @@ static void print_resource_counts(struct resource_stats *stats) {
 }
 
 // Function to print per-cgroup statistics
-static void print_cgroup_stats(int cgroup_map_fd) {
+static void print_cgroup_stats(int cgroup_map_fd, int resource_map_fd) {
 	__u64 lookup_key = 0;
 	__u64 next_key;
 	struct cgroup_stats stats;
@@ -274,7 +319,53 @@ static void print_cgroup_stats(int cgroup_map_fd) {
 					if (stats.counts[i] > 0) {
 						// Check if interception is needed
 						unsigned long frequency = stats.counts[i] / output_interval;
-						if (should_intercept(i, frequency, stats.counts[i])) {
+						bool intercept = false;
+						
+						// For resource creation/destruction verbs, check resource count based interception
+						switch (i) {
+						case RDMA_MONITOR_QP_CREATE:
+							{
+								__u32 key = 0;
+								struct resource_stats global_stats;
+								if (bpf_map_lookup_elem(resource_map_fd, &key, &global_stats) == 0) {
+									intercept = should_intercept_resource(RDMA_RESOURCE_QP, global_stats.qp_count);
+								}
+							}
+							break;
+						case RDMA_MONITOR_PD_ALLOC:
+							{
+								__u32 key = 0;
+								struct resource_stats global_stats;
+								if (bpf_map_lookup_elem(resource_map_fd, &key, &global_stats) == 0) {
+									intercept = should_intercept_resource(RDMA_RESOURCE_PD, global_stats.pd_count);
+								}
+							}
+							break;
+						case RDMA_MONITOR_CQ_CREATE:
+							{
+								__u32 key = 0;
+								struct resource_stats global_stats;
+								if (bpf_map_lookup_elem(resource_map_fd, &key, &global_stats) == 0) {
+									intercept = should_intercept_resource(RDMA_RESOURCE_CQ, global_stats.cq_count);
+								}
+							}
+							break;
+						case RDMA_MONITOR_MR_REG:
+							{
+								__u32 key = 0;
+								struct resource_stats global_stats;
+								if (bpf_map_lookup_elem(resource_map_fd, &key, &global_stats) == 0) {
+									intercept = should_intercept_resource(RDMA_RESOURCE_MR, global_stats.mr_count);
+								}
+							}
+							break;
+						default:
+							// For other verbs, check frequency based interception
+							intercept = should_intercept_frequency(i, frequency);
+							break;
+						}
+						
+						if (intercept) {
 							printf("  %-25s: %llu (*** INTERCEPTED ***)\n", rdma_monitor_tpye_str(i), stats.counts[i]);
 						} else {
 							printf("  %-25s: %llu\n", rdma_monitor_tpye_str(i), stats.counts[i]);
@@ -300,30 +391,25 @@ static void print_frequency_stats(struct resource_stats *current_stats, struct r
 	print_separator();
 	
 	// Calculate and display frequency for each resource type
-	unsigned long qp_freq = (current_stats->qp_count > prev_stats_copy->qp_count) ? 
+	unsigned long qp_create_freq = (current_stats->qp_count > prev_stats_copy->qp_count) ? 
 		(current_stats->qp_count - prev_stats_copy->qp_count) / output_interval : 0;
-	unsigned long pd_freq = (current_stats->pd_count > prev_stats_copy->pd_count) ? 
+	unsigned long pd_alloc_freq = (current_stats->pd_count > prev_stats_copy->pd_count) ? 
 		(current_stats->pd_count - prev_stats_copy->pd_count) / output_interval : 0;
-	unsigned long cq_freq = (current_stats->cq_count > prev_stats_copy->cq_count) ? 
+	unsigned long cq_create_freq = (current_stats->cq_count > prev_stats_copy->cq_count) ? 
 		(current_stats->cq_count - prev_stats_copy->cq_count) / output_interval : 0;
-	unsigned long mr_freq = (current_stats->mr_count > prev_stats_copy->mr_count) ? 
+	unsigned long mr_reg_freq = (current_stats->mr_count > prev_stats_copy->mr_count) ? 
 		(current_stats->mr_count - prev_stats_copy->mr_count) / output_interval : 0;
 		
-	// Check for interceptions
-	bool qp_intercept = should_intercept(RDMA_MONITOR_QP_CREATE, qp_freq, current_stats->qp_count) ||
-	                    should_intercept(RDMA_MONITOR_QP_MODIFY, qp_freq, current_stats->qp_count) ||
-	                    should_intercept(RDMA_MONITOR_QP_DESTORY, qp_freq, current_stats->qp_count);
-	bool pd_intercept = should_intercept(RDMA_MONITOR_PD_ALLOC, pd_freq, current_stats->pd_count) ||
-	                    should_intercept(RDMA_MONITOR_PD_DEALLOC, pd_freq, current_stats->pd_count);
-	bool cq_intercept = should_intercept(RDMA_MONITOR_CQ_CREATE, cq_freq, current_stats->cq_count) ||
-	                    should_intercept(RDMA_MONITOR_CQ_DESTORY, cq_freq, current_stats->cq_count);
-	bool mr_intercept = should_intercept(RDMA_MONITOR_MR_REG, mr_freq, current_stats->mr_count) ||
-	                    should_intercept(RDMA_MONITOR_MR_DEREG, mr_freq, current_stats->mr_count);
+	// Check for frequency-based interceptions
+	bool qp_create_intercept = should_intercept_frequency(RDMA_MONITOR_QP_CREATE, qp_create_freq);
+	bool pd_alloc_intercept = should_intercept_frequency(RDMA_MONITOR_PD_ALLOC, pd_alloc_freq);
+	bool cq_create_intercept = should_intercept_frequency(RDMA_MONITOR_CQ_CREATE, cq_create_freq);
+	bool mr_reg_intercept = should_intercept_frequency(RDMA_MONITOR_MR_REG, mr_reg_freq);
 		
-	printf("QP Operations:  %lu/s %s\n", qp_freq, qp_intercept ? "(*** INTERCEPTED ***)" : "");
-	printf("PD Operations:  %lu/s %s\n", pd_freq, pd_intercept ? "(*** INTERCEPTED ***)" : "");
-	printf("CQ Operations:  %lu/s %s\n", cq_freq, cq_intercept ? "(*** INTERCEPTED ***)" : "");
-	printf("MR Operations:  %lu/s %s\n", mr_freq, mr_intercept ? "(*** INTERCEPTED ***)" : "");
+	printf("QP Create:  %lu/s %s\n", qp_create_freq, qp_create_intercept ? "(*** INTERCEPTED ***)" : "");
+	printf("PD Alloc:   %lu/s %s\n", pd_alloc_freq, pd_alloc_intercept ? "(*** INTERCEPTED ***)" : "");
+	printf("CQ Create:  %lu/s %s\n", cq_create_freq, cq_create_intercept ? "(*** INTERCEPTED ***)" : "");
+	printf("MR Reg:     %lu/s %s\n", mr_reg_freq, mr_reg_intercept ? "(*** INTERCEPTED ***)" : "");
 	print_separator();
 	printf("\n");
 }
@@ -435,7 +521,7 @@ int main(int argc, char **argv)
 			__u32 key = 0;
 			if (bpf_map_lookup_elem(map_fd, &key, &stats) == 0) {
 				print_resource_counts(&stats);
-				print_cgroup_stats(cgroup_map_fd);
+				print_cgroup_stats(cgroup_map_fd, map_fd);
 				print_frequency_stats(&stats, &prev_stats_copy);
 				
 				// Update previous stats copy for next frequency calculation

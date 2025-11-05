@@ -84,43 +84,50 @@ The tool calculates and displays the per-second call rate for each RDMA operatio
 
 ### Interception Based on Thresholds
 
-The tool supports interception of RDMA operations based on configurable thresholds:
-- Frequency-based interception: Triggered when operations exceed a specified rate (per second)
-- Count-based interception: Triggered when total operations exceed a specified count
-- Either condition or both conditions can trigger interception
-- Use 0 in config file to disable either check
+The tool supports two types of interception of RDMA operations based on configurable thresholds:
+
+1. **Resource Count Based Interception**:
+   - Triggered when total resource count exceeds a specified limit
+   - Only intercepts resource creation/registration operations, not destruction/deallocation
+   - Examples: When QP count > limit, intercept QP creation but allow QP destruction
+
+2. **Frequency Based Interception**:
+   - Triggered when operation call rate exceeds a specified rate (per second)
+   - Can intercept any operation type
+   - Examples: When MR registration rate > limit, intercept MR registration operations
 
 ## Configuration File
 
-The interception behavior is controlled by a configuration file (default: `config.txt`). Each line in the configuration file specifies thresholds for a specific RDMA operation:
+The interception behavior is controlled by a configuration file (default: `config.txt`). Each line in the configuration file specifies thresholds for either resource count or operation frequency:
 
 ```
-VERB_NAME MAX_FREQUENCY MAX_TOTAL_COUNT
+RESOURCE_TYPE MAX_COUNT
+VERB_TYPE MAX_FREQUENCY
 ```
 
-- `VERB_NAME`: The RDMA operation type (e.g., QP_CREATE, MR_REG)
+- `RESOURCE_TYPE`: The RDMA resource type (e.g., QP_COUNT, MR_COUNT)
+- `MAX_COUNT`: Maximum allowed resource count (0 to disable count check)
+- `VERB_TYPE`: The RDMA operation type (e.g., QP_CREATE, MR_REG)
 - `MAX_FREQUENCY`: Maximum allowed calls per second (0 to disable frequency check)
-- `MAX_TOTAL_COUNT`: Maximum allowed total calls (0 to disable count check)
 
 Interception Logic:
-- If MAX_FREQUENCY > 0 and current frequency > MAX_FREQUENCY: INTERCEPT
-- If MAX_TOTAL_COUNT > 0 and total count > MAX_TOTAL_COUNT: INTERCEPT
-- If both conditions are met: INTERCEPT
-- If both are 0: No interception for this verb
+- **Resource Count Based**: When current resource count > MAX_COUNT, intercept CREATE/ALLOC operations but allow DESTROY/DEALLOC
+- **Frequency Based**: When verb call rate > MAX_FREQUENCY, intercept the specific verb
+- Use 0 to disable either type of check
 
 Example configuration:
 ```
-# Intercept if QP creation rate > 100/s OR total QP creations > 1000
-QP_CREATE 100 1000
+# Intercept QP creation when total QP count > 1000
+QP_COUNT 1000
 
-# Intercept only if total MR registrations > 5000 (ignore frequency)
-MR_REG 0 5000
+# Intercept MR registration when rate > 200/s
+MR_REG 200
 
-# Intercept only if CQ creation rate > 50/s (ignore total count)
-CQ_CREATE 50 0
+# Intercept QP creation when rate > 100/s
+QP_CREATE 100
 
-# No interception for PD allocation
-PD_ALLOC 0 0
+# No interception for PD count
+PD_COUNT 0
 ```
 
 ## Compilation and Execution
@@ -183,9 +190,19 @@ RDMA Control Path Monitor Started (interval: 2 seconds)
 ==================================================
 [2023-11-05 10:45:10] Interception Configuration:
 ==================================================
-RDMA_MONITOR_QP_CREATE   : Frequency=>100/s, Total=>1000
-RDMA_MONITOR_MR_REG      : Frequency=DISABLED, Total=>5000
-RDMA_MONITOR_CQ_CREATE   : Frequency=>50/s, Total=DISABLED
+Resource Count Based Interception:
+  QP_COUNT       : >1000
+  MR_COUNT       : >5000
+
+Frequency Based Interception:
+  MR_REG         : >200/s
+  QP_CREATE      : >100/s
+
+Disabled Interceptions:
+  PD_COUNT       : DISABLED
+  CQ_COUNT       : DISABLED
+  QP_MODIFY      : DISABLED
+  PD_ALLOC       : DISABLED
 ==================================================
 
 ==================================================
@@ -213,10 +230,10 @@ CGROUP ID: 9876543210
 
 [2023-11-05 10:45:10] RDMA Operation Frequency (calls per second):
 ==================================================
-QP Operations:  2/s
-PD Operations:  0/s
-CQ Operations:  1/s
-MR Operations:  3/s (*** INTERCEPTED ***)
+QP Create:  2/s
+PD Alloc:   0/s
+CQ Create:  1/s
+MR Reg:     205/s (*** INTERCEPTED ***)
 ==================================================
 
 ==================================================
@@ -237,4 +254,5 @@ MR Operations:  3/s (*** INTERCEPTED ***)
 2. Current implementation primarily targets Mellanox network card drivers
 3. Kernel function names may need adjustment based on the actual environment
 4. Interception currently only shows warnings in output; actual blocking requires additional system-level controls
-5. Configuration file uses 0 to disable either frequency or total count checks
+5. Configuration file uses 0 to disable either resource count or frequency checks
+6. Resource count based interception only affects creation/registration operations, not destruction/deallocation

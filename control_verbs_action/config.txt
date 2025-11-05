@@ -1,7 +1,13 @@
 # RDMA Control Verbs Interception Configuration
-# Format: VERB_NAME MAX_FREQUENCY MAX_TOTAL_COUNT
-# Use 0 to disable check for either frequency or total count
-# Supported verbs:
+# Format lines:
+# For resource count based interception: RESOURCE_TYPE MAX_COUNT
+# For frequency based interception: VERB_TYPE MAX_FREQUENCY
+# Use 0 to disable check
+#
+# Supported resource types for count-based interception:
+# QP_COUNT, PD_COUNT, CQ_COUNT, MR_COUNT
+#
+# Supported verb types for frequency-based interception:
 # QP_CREATE, QP_MODIFY, QP_DESTROY
 # PD_ALLOC, PD_DEALLOC
 # CQ_CREATE, CQ_DESTROY
@@ -10,25 +16,24 @@
 # GID_QUERY
 #
 # Interception Logic:
-# - If MAX_FREQUENCY > 0 and current frequency > MAX_FREQUENCY: INTERCEPT
-# - If MAX_TOTAL_COUNT > 0 and total count > MAX_TOTAL_COUNT: INTERCEPT
-# - If both conditions are met: INTERCEPT
-# - If both are 0: No interception for this verb
+# Resource count based: When current resource count > MAX_COUNT, intercept CREATE/ALLOC operations but allow DESTROY/DEALLOC
+# Frequency based: When verb call rate > MAX_FREQUENCY, intercept the specific verb
 
 # Examples:
-# QP_CREATE 100 1000     # Intercept if QP creation rate > 100/s OR total QP creations > 1000
-# MR_REG 0 5000          # Intercept only if total MR registrations > 5000 (ignore frequency)
-# CQ_CREATE 50 0         # Intercept only if CQ creation rate > 50/s (ignore total count)
-# PD_ALLOC 0 0           # No interception for PD allocation
+# QP_COUNT 1000          # Intercept QP creation when total QP count > 1000
+# MR_REG 200             # Intercept MR registration when rate > 200/s
+# QP_CREATE 100          # Intercept QP creation when rate > 100/s
 
-QP_CREATE 100 1000
-QP_MODIFY 200 2000
-QP_DESTROY 100 1000
-PD_ALLOC 50 500
-PD_DEALLOC 50 500
-CQ_CREATE 100 1000
-CQ_DESTROY 100 1000
-MR_REG 200 5000
-MR_DEREG 200 5000
-CM_SEND_REQ 50 500
-GID_QUERY 100 1000
+QP_COUNT 1000
+PD_COUNT 500
+CQ_COUNT 1000
+MR_COUNT 5000
+
+QP_CREATE 100
+QP_MODIFY 200
+MR_REG 200
+MR_DEREG 200
+CQ_CREATE 100
+PD_ALLOC 50
+CM_SEND_REQ 50
+GID_QUERY 100

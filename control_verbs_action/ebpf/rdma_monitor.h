@@ -7,6 +7,7 @@
 #define MAX_FILENAME_LEN 127
 #define MAX_CGROUPS 64
 #define MAX_VERBS 11
+#define MAX_RESOURCES 4
 
 enum rdma_monitor_type {
 	RDMA_MONITOR_QP_CREATE,
@@ -23,8 +24,17 @@ enum rdma_monitor_type {
 	RDMA_MONITOR_TYPE_MAX,
 };
 
+// Resource types for count-based interception
+enum rdma_resource_type {
+	RDMA_RESOURCE_QP,
+	RDMA_RESOURCE_PD,
+	RDMA_RESOURCE_CQ,
+	RDMA_RESOURCE_MR,
+	RDMA_RESOURCE_MAX,
+};
+
 // Verb names for configuration matching
-static const char *rdma_verb_names[MAX_VERBS] = {
+static const char *rdma_verb_names[RDMA_MONITOR_TYPE_MAX] = {
 	"QP_CREATE",
 	"QP_MODIFY", 
 	"QP_DESTROY",
@@ -36,6 +46,14 @@ static const char *rdma_verb_names[MAX_VERBS] = {
 	"MR_DEREG",
 	"CM_SEND_REQ",
 	"GID_QUERY"
+};
+
+// Resource names for configuration matching
+static const char *rdma_resource_names[RDMA_RESOURCE_MAX] = {
+	"QP_COUNT",
+	"PD_COUNT",
+	"CQ_COUNT",
+	"MR_COUNT"
 };
 
 static inline char *rdma_monitor_tpye_str(enum rdma_monitor_type type)
@@ -83,8 +101,11 @@ struct cgroup_stats {
 
 // Structure for interception thresholds
 struct interception_config {
-	__u64 max_frequency[RDMA_MONITOR_TYPE_MAX];   // Max calls per second, 0 to disable
-	__u64 max_total_count[RDMA_MONITOR_TYPE_MAX]; // Max total calls, 0 to disable
+	// Max resource counts for count-based interception (0 to disable)
+	__u64 max_resource_count[RDMA_RESOURCE_MAX];
+	
+	// Max call frequency for frequency-based interception (0 to disable)
+	__u64 max_frequency[RDMA_MONITOR_TYPE_MAX];
 };
 
 union ibv_gid {

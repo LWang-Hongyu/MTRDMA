@@ -43,16 +43,32 @@ static __u64 get_cgroup_id() {
 	return BPF_CORE_READ(cgrp, kn, id);
 }
 
-// Function to check if interception is needed
-static bool should_intercept(enum rdma_monitor_type type, __u64 total_count) {
+// Function to check if resource count based interception is needed
+static bool should_intercept_resource(enum rdma_resource_type resource_type, __u64 resource_count) {
 	__u32 key = 0;
 	struct interception_config *config = bpf_map_lookup_elem(&intercept_config_map, &key);
 	if (!config) {
 		return false;
 	}
 	
-	// Check total count threshold
-	if (config->max_total_count[type] > 0 && total_count > config->max_total_count[type]) {
+	// Check resource count threshold
+	if (config->max_resource_count[resource_type] > 0 && resource_count > config->max_resource_count[resource_type]) {
+		return true;
+	}
+	
+	return false;
+}
+
+// Function to check if frequency based interception is needed
+static bool should_intercept_frequency(enum rdma_monitor_type verb_type, __u64 frequency) {
+	__u32 key = 0;
+	struct interception_config *config = bpf_map_lookup_elem(&intercept_config_map, &key);
+	if (!config) {
+		return false;
+	}
+	
+	// Check frequency threshold
+	if (config->max_frequency[verb_type] > 0 && frequency > config->max_frequency[verb_type]) {
 		return true;
 	}
 	
@@ -72,12 +88,11 @@ int BPF_KPROBE(ib_create_qp)
 	if (stats) {
 		__sync_fetch_and_add(&stats->qp_count, 1);
 		
-		// Check if interception is needed
-		if (should_intercept(RDMA_MONITOR_QP_CREATE, stats->qp_count)) {
+		// Check if interception is needed based on resource count
+		if (should_intercept_resource(RDMA_RESOURCE_QP, stats->qp_count)) {
 			// Log interception event
-			char msg[] = "Intercepted QP_CREATE due to total count";
+			char msg[] = "Intercepted QP_CREATE due to QP count limit";
 			bpf_printk("%s\n", msg);
-			// Note: Actual interception would require more complex mechanisms
 		}
 	}
 
@@ -86,12 +101,8 @@ int BPF_KPROBE(ib_create_qp)
 	if (cgroup_stats_entry) {
 		cgroup_stats_entry->counts[RDMA_MONITOR_QP_CREATE]++;
 		
-		// Check if interception is needed
-		if (should_intercept(RDMA_MONITOR_QP_CREATE, cgroup_stats_entry->counts[RDMA_MONITOR_QP_CREATE])) {
-			// Log interception event
-			char msg[] = "Intercepted QP_CREATE for cgroup due to total count";
-			bpf_printk("%s %llu\n", msg, cgroup_id);
-		}
+		// For frequency-based interception check
+		// We would need to implement time-based checks in user space for accurate frequency calculation
 	} else {
 		new_cgroup_stats.counts[RDMA_MONITOR_QP_CREATE] = 1;
 		bpf_map_update_elem(&cgroup_stats, &cgroup_id, &new_cgroup_stats, BPF_ANY);
@@ -162,10 +173,10 @@ int BPF_KPROBE(ib_alloc_pd)
 	if (stats) {
 		__sync_fetch_and_add(&stats->pd_count, 1);
 		
-		// Check if interception is needed
-		if (should_intercept(RDMA_MONITOR_PD_ALLOC, stats->pd_count)) {
+		// Check if interception is needed based on resource count
+		if (should_intercept_resource(RDMA_RESOURCE_PD, stats->pd_count)) {
 			// Log interception event
-			char msg[] = "Intercepted PD_ALLOC due to total count";
+			char msg[] = "Intercepted PD_ALLOC due to PD count limit";
 			bpf_printk("%s\n", msg);
 		}
 	}
@@ -175,12 +186,8 @@ int BPF_KPROBE(ib_alloc_pd)
 	if (cgroup_stats_entry) {
 		cgroup_stats_entry->counts[RDMA_MONITOR_PD_ALLOC]++;
 		
-		// Check if interception is needed
-		if (should_intercept(RDMA_MONITOR_PD_ALLOC, cgroup_stats_entry->counts[RDMA_MONITOR_PD_ALLOC])) {
-			// Log interception event
-			char msg[] = "Intercepted PD_ALLOC for cgroup due to total count";
-			bpf_printk("%s %llu\n", msg, cgroup_id);
-		}
+		// For frequency-based interception check
+		// We would need to implement time-based checks in user space for accurate frequency calculation
 	} else {
 		new_cgroup_stats.counts[RDMA_MONITOR_PD_ALLOC] = 1;
 		bpf_map_update_elem(&cgroup_stats, &cgroup_id, &new_cgroup_stats, BPF_ANY);
@@ -232,10 +239,10 @@ int BPF_KPROBE(ib_create_cq)
 	if (stats) {
 		__sync_fetch_and_add(&stats->cq_count, 1);
 		
-		// Check if interception is needed
-		if (should_intercept(RDMA_MONITOR_CQ_CREATE, stats->cq_count)) {
+		// Check if interception is needed based on resource count
+		if (should_intercept_resource(RDMA_RESOURCE_CQ, stats->cq_count)) {
 			// Log interception event
-			char msg[] = "Intercepted CQ_CREATE due to total count";
+			char msg[] = "Intercepted CQ_CREATE due to CQ count limit";
 			bpf_printk("%s\n", msg);
 		}
 	}
@@ -245,12 +252,8 @@ int BPF_KPROBE(ib_create_cq)
 	if (cgroup_stats_entry) {
 		cgroup_stats_entry->counts[RDMA_MONITOR_CQ_CREATE]++;
 		
-		// Check if interception is needed
-		if (should_intercept(RDMA_MONITOR_CQ_CREATE, cgroup_stats_entry->counts[RDMA_MONITOR_CQ_CREATE])) {
-			// Log interception event
-			char msg[] = "Intercepted CQ_CREATE for cgroup due to total count";
-			bpf_printk("%s %llu\n", msg, cgroup_id);
-		}
+		// For frequency-based interception check
+		// We would need to implement time-based checks in user space for accurate frequency calculation
 	} else {
 		new_cgroup_stats.counts[RDMA_MONITOR_CQ_CREATE] = 1;
 		bpf_map_update_elem(&cgroup_stats, &cgroup_id, &new_cgroup_stats, BPF_ANY);
@@ -302,10 +305,10 @@ int BPF_KPROBE(ib_reg_user_mr, struct ib_pd *pd, u64 start, u64 length, u64 virt
 	if (stats) {
 		__sync_fetch_and_add(&stats->mr_count, 1);
 		
-		// Check if interception is needed
-		if (should_intercept(RDMA_MONITOR_MR_REG, stats->mr_count)) {
+		// Check if interception is needed based on resource count
+		if (should_intercept_resource(RDMA_RESOURCE_MR, stats->mr_count)) {
 			// Log interception event
-			char msg[] = "Intercepted MR_REG due to total count";
+			char msg[] = "Intercepted MR_REG due to MR count limit";
 			bpf_printk("%s\n", msg);
 		}
 	}
@@ -315,12 +318,8 @@ int BPF_KPROBE(ib_reg_user_mr, struct ib_pd *pd, u64 start, u64 length, u64 virt
 	if (cgroup_stats_entry) {
 		cgroup_stats_entry->counts[RDMA_MONITOR_MR_REG]++;
 		
-		// Check if interception is needed
-		if (should_intercept(RDMA_MONITOR_MR_REG, cgroup_stats_entry->counts[RDMA_MONITOR_MR_REG])) {
-			// Log interception event
-			char msg[] = "Intercepted MR_REG for cgroup due to total count";
-			bpf_printk("%s %llu\n", msg, cgroup_id);
-		}
+		// For frequency-based interception check
+		// We would need to implement time-based checks in user space for accurate frequency calculation
 	} else {
 		new_cgroup_stats.counts[RDMA_MONITOR_MR_REG] = 1;
 		bpf_map_update_elem(&cgroup_stats, &cgroup_id, &new_cgroup_stats, BPF_ANY);
