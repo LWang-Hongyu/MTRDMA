@@ -8,12 +8,14 @@
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
+// Maps for storing statistics
 struct {
-	__uint(type, BPF_MAP_TYPE_RINGBUF);
-	__uint(max_entries, 256 * 1024);
-} rb SEC(".maps");
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 10240);
+	__type(key, __u64); // cgroup id
+	__type(value, struct cgroup_stats);
+} cgroup_stats SEC(".maps");
 
-// Map to store global resource counts
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
 	__uint(max_entries, 1);
@@ -21,590 +23,393 @@ struct {
 	__type(value, struct resource_stats);
 } resource_counts SEC(".maps");
 
-// Map to store per-cgroup statistics
 struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__uint(max_entries, MAX_CGROUPS);
-	__type(key, __u64);  // cgroup ID
-	__type(value, struct cgroup_stats);
-} cgroup_stats SEC(".maps");
+	__uint(type, BPF_MAP_TYPE_RINGBUF);
+	__uint(max_entries, 256 * 1024);
+} rb SEC(".maps");
+
+// Interception configuration map
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, struct interception_config);
+} intercept_config_map SEC(".maps");
+
+// Helper function to get cgroup ID
+static __u64 get_cgroup_id() {
+	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+	struct cgroup *cgrp = BPF_CORE_READ(task, cgroups, subsys[0], cgroup);
+	return BPF_CORE_READ(cgrp, kn, id);
+}
+
+// Function to check if interception is needed
+static bool should_intercept(enum rdma_monitor_type type, __u64 total_count) {
+	__u32 key = 0;
+	struct interception_config *config = bpf_map_lookup_elem(&intercept_config_map, &key);
+	if (!config) {
+		return false;
+	}
+	
+	// Check total count threshold
+	if (config->max_total_count[type] > 0 && total_count > config->max_total_count[type]) {
+		return true;
+	}
+	
+	return false;
+}
 
 SEC("kprobe/mlx5_ib_create_qp")
-int BPF_KPROBE(ib_uverbs_post_send)
+int BPF_KPROBE(ib_create_qp)
 {
+	__u64 cgroup_id = get_cgroup_id();
+	struct cgroup_stats *cgroup_stats_entry;
+	struct cgroup_stats new_cgroup_stats = {};
 
-	struct event *e;
-	pid_t pid;
-	u64 ts;
-	u64 cgroup_id;
-
-	pid = bpf_get_current_pid_tgid() >> 32;
-	ts = bpf_ktime_get_ns();
-	cgroup_id = bpf_get_current_cgroup_id();
-    
-	/* reserve sample from BPF ringbuf */
-	e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
-	if (!e)
-		return 0;
-
-	e->pid = pid;
-	e->type = RDMA_MONITOR_QP_CREATE;
-	e->cgroup_id = cgroup_id;
-	bpf_get_current_comm(&e->comm, sizeof(e->comm));
-    
-	/* successfully submit it to user-space for post-processing */
-	bpf_ringbuf_submit(e, 0);
-
-	/* Update global QP count */
+	// Update global resource count
 	__u32 key = 0;
 	struct resource_stats *stats = bpf_map_lookup_elem(&resource_counts, &key);
 	if (stats) {
 		__sync_fetch_and_add(&stats->qp_count, 1);
+		
+		// Check if interception is needed
+		if (should_intercept(RDMA_MONITOR_QP_CREATE, stats->qp_count)) {
+			// Log interception event
+			char msg[] = "Intercepted QP_CREATE due to total count";
+			bpf_printk("%s\n", msg);
+			// Note: Actual interception would require more complex mechanisms
+		}
 	}
-	
-	/* Update per-cgroup statistics */
-	struct cgroup_stats *cg_stats = bpf_map_lookup_elem(&cgroup_stats, &cgroup_id);
-	if (!cg_stats) {
-		struct cgroup_stats new_cg_stats = {};
-		bpf_map_update_elem(&cgroup_stats, &cgroup_id, &new_cg_stats, BPF_ANY);
-		cg_stats = bpf_map_lookup_elem(&cgroup_stats, &cgroup_id);
-	}
-	
-	if (cg_stats) {
-		cg_stats->counts[RDMA_MONITOR_QP_CREATE]++;
+
+	// Update per-cgroup statistics
+	cgroup_stats_entry = bpf_map_lookup_elem(&cgroup_stats, &cgroup_id);
+	if (cgroup_stats_entry) {
+		cgroup_stats_entry->counts[RDMA_MONITOR_QP_CREATE]++;
+		
+		// Check if interception is needed
+		if (should_intercept(RDMA_MONITOR_QP_CREATE, cgroup_stats_entry->counts[RDMA_MONITOR_QP_CREATE])) {
+			// Log interception event
+			char msg[] = "Intercepted QP_CREATE for cgroup due to total count";
+			bpf_printk("%s %llu\n", msg, cgroup_id);
+		}
+	} else {
+		new_cgroup_stats.counts[RDMA_MONITOR_QP_CREATE] = 1;
+		bpf_map_update_elem(&cgroup_stats, &cgroup_id, &new_cgroup_stats, BPF_ANY);
 	}
 
 	return 0;
 }
 
 SEC("kprobe/mlx5_ib_modify_qp")
-int BPF_KPROBE(mlx5_ib_modify_qp, struct ib_qp *ibqp, struct ib_qp_attr *attr,
-		      int attr_mask, struct ib_udata *udata)
+int BPF_KPROBE(ib_modify_qp, struct ib_qp *qp, struct ib_qp_attr *attr, int attr_mask)
 {
+	__u64 cgroup_id = get_cgroup_id();
+	struct cgroup_stats *cgroup_stats_entry;
+	struct cgroup_stats new_cgroup_stats = {};
 
-	struct event *e;
-	pid_t pid;
-	u64 ts;
-	u64 cgroup_id;
-
-	pid = bpf_get_current_pid_tgid() >> 32;
-	ts = bpf_ktime_get_ns();
-	cgroup_id = bpf_get_current_cgroup_id();
-    
-	/* reserve sample from BPF ringbuf */
-	e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
-	if (!e)
-		return 0;
-
-	e->pid = pid;
-	e->type = RDMA_MONITOR_QP_MODIFY;
-	e->cgroup_id = cgroup_id;
-	bpf_probe_read(&e->qp.dest_qpn, sizeof(e->qp.dest_qpn), &attr->dest_qp_num);
-	bpf_probe_read(&e->qp.qpn, sizeof(e->qp.qpn), &ibqp->qp_num);
-	bpf_probe_read(&e->qp.gid, sizeof(e->qp.gid), &attr->ah_attr.grh.dgid);
-	bpf_get_current_comm(&e->comm, sizeof(e->comm));
-    
-	/* successfully submit it to user-space for post-processing */
-	bpf_ringbuf_submit(e, 0);
-	
-	/* Update per-cgroup statistics */
-	struct cgroup_stats *cg_stats = bpf_map_lookup_elem(&cgroup_stats, &cgroup_id);
-	if (!cg_stats) {
-		struct cgroup_stats new_cg_stats = {};
-		bpf_map_update_elem(&cgroup_stats, &cgroup_id, &new_cg_stats, BPF_ANY);
-		cg_stats = bpf_map_lookup_elem(&cgroup_stats, &cgroup_id);
-	}
-	
-	if (cg_stats) {
-		cg_stats->counts[RDMA_MONITOR_QP_MODIFY]++;
+	// Update per-cgroup statistics
+	cgroup_stats_entry = bpf_map_lookup_elem(&cgroup_stats, &cgroup_id);
+	if (cgroup_stats_entry) {
+		cgroup_stats_entry->counts[RDMA_MONITOR_QP_MODIFY]++;
+	} else {
+		new_cgroup_stats.counts[RDMA_MONITOR_QP_MODIFY] = 1;
+		bpf_map_update_elem(&cgroup_stats, &cgroup_id, &new_cgroup_stats, BPF_ANY);
 	}
 
 	return 0;
 }
 
 SEC("kprobe/mlx5_ib_destroy_qp")
-int BPF_KPROBE(mlx5_ib_destroy_qp)
+int BPF_KPROBE(ib_destroy_qp)
 {
-
-	struct event *e;
-	pid_t pid;
-	u64 ts;
-	u64 cgroup_id;
-
-	pid = bpf_get_current_pid_tgid() >> 32;
-	ts = bpf_ktime_get_ns();
-	cgroup_id = bpf_get_current_cgroup_id();
-    
-	/* reserve sample from BPF ringbuf */
-	e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
-	if (!e)
-		return 0;
-
-	e->pid = pid;
-	e->type = RDMA_MONITOR_QP_DESTORY;
-	e->cgroup_id = cgroup_id;
-	bpf_get_current_comm(&e->comm, sizeof(e->comm));
-    
-	/* successfully submit it to user-space for post-processing */
-	bpf_ringbuf_submit(e, 0);
-
-	/* Update global QP count */
 	__u32 key = 0;
-	struct resource_stats *stats = bpf_map_lookup_elem(&resource_counts, &key);
-	if (stats && stats->qp_count > 0) {
-		__sync_fetch_and_sub(&stats->qp_count, 1);
+	struct resource_stats *stats;
+	__u64 cgroup_id = get_cgroup_id();
+	struct cgroup_stats *cgroup_stats_entry;
+	struct cgroup_stats new_cgroup_stats = {};
+
+	// Update global resource count
+	stats = bpf_map_lookup_elem(&resource_counts, &key);
+	if (stats) {
+		if (stats->qp_count > 0) {
+			__sync_fetch_and_sub(&stats->qp_count, 1);
+		}
 	}
-	
-	/* Update per-cgroup statistics */
-	struct cgroup_stats *cg_stats = bpf_map_lookup_elem(&cgroup_stats, &cgroup_id);
-	if (!cg_stats) {
-		struct cgroup_stats new_cg_stats = {};
-		bpf_map_update_elem(&cgroup_stats, &cgroup_id, &new_cg_stats, BPF_ANY);
-		cg_stats = bpf_map_lookup_elem(&cgroup_stats, &cgroup_id);
-	}
-	
-	if (cg_stats) {
-		cg_stats->counts[RDMA_MONITOR_QP_DESTORY]++;
+
+	// Update per-cgroup statistics
+	cgroup_stats_entry = bpf_map_lookup_elem(&cgroup_stats, &cgroup_id);
+	if (cgroup_stats_entry) {
+		cgroup_stats_entry->counts[RDMA_MONITOR_QP_DESTORY]++;
+	} else {
+		new_cgroup_stats.counts[RDMA_MONITOR_QP_DESTORY] = 1;
+		bpf_map_update_elem(&cgroup_stats, &cgroup_id, &new_cgroup_stats, BPF_ANY);
 	}
 
 	return 0;
 }
 
 SEC("kprobe/mlx5_ib_alloc_pd")
-int BPF_KPROBE(mlx5_ib_alloc_pd)
+int BPF_KPROBE(ib_alloc_pd)
 {
-
-	struct event *e;
-	pid_t pid;
-	u64 ts;
-	u64 cgroup_id;
-
-	pid = bpf_get_current_pid_tgid() >> 32;
-	ts = bpf_ktime_get_ns();
-	cgroup_id = bpf_get_current_cgroup_id();
-    
-	/* reserve sample from BPF ringbuf */
-	e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
-	if (!e)
-		return 0;
-
-	e->pid = pid;
-	e->type = RDMA_MONITOR_PD_ALLOC;
-	e->cgroup_id = cgroup_id;
-	bpf_get_current_comm(&e->comm, sizeof(e->comm));
-    
-	/* successfully submit it to user-space for post-processing */
-	bpf_ringbuf_submit(e, 0);
-
-	/* Update global PD count */
 	__u32 key = 0;
-	struct resource_stats *stats = bpf_map_lookup_elem(&resource_counts, &key);
+	struct resource_stats *stats;
+	__u64 cgroup_id = get_cgroup_id();
+	struct cgroup_stats *cgroup_stats_entry;
+	struct cgroup_stats new_cgroup_stats = {};
+
+	// Update global resource count
+	stats = bpf_map_lookup_elem(&resource_counts, &key);
 	if (stats) {
 		__sync_fetch_and_add(&stats->pd_count, 1);
+		
+		// Check if interception is needed
+		if (should_intercept(RDMA_MONITOR_PD_ALLOC, stats->pd_count)) {
+			// Log interception event
+			char msg[] = "Intercepted PD_ALLOC due to total count";
+			bpf_printk("%s\n", msg);
+		}
 	}
-	
-	/* Update per-cgroup statistics */
-	struct cgroup_stats *cg_stats = bpf_map_lookup_elem(&cgroup_stats, &cgroup_id);
-	if (!cg_stats) {
-		struct cgroup_stats new_cg_stats = {};
-		bpf_map_update_elem(&cgroup_stats, &cgroup_id, &new_cg_stats, BPF_ANY);
-		cg_stats = bpf_map_lookup_elem(&cgroup_stats, &cgroup_id);
-	}
-	
-	if (cg_stats) {
-		cg_stats->counts[RDMA_MONITOR_PD_ALLOC]++;
+
+	// Update per-cgroup statistics
+	cgroup_stats_entry = bpf_map_lookup_elem(&cgroup_stats, &cgroup_id);
+	if (cgroup_stats_entry) {
+		cgroup_stats_entry->counts[RDMA_MONITOR_PD_ALLOC]++;
+		
+		// Check if interception is needed
+		if (should_intercept(RDMA_MONITOR_PD_ALLOC, cgroup_stats_entry->counts[RDMA_MONITOR_PD_ALLOC])) {
+			// Log interception event
+			char msg[] = "Intercepted PD_ALLOC for cgroup due to total count";
+			bpf_printk("%s %llu\n", msg, cgroup_id);
+		}
+	} else {
+		new_cgroup_stats.counts[RDMA_MONITOR_PD_ALLOC] = 1;
+		bpf_map_update_elem(&cgroup_stats, &cgroup_id, &new_cgroup_stats, BPF_ANY);
 	}
 
 	return 0;
 }
 
 SEC("kprobe/mlx5_ib_dealloc_pd")
-int BPF_KPROBE(mlx5_ib_dealloc_pd)
+int BPF_KPROBE(ib_dealloc_pd)
 {
-
-	struct event *e;
-	pid_t pid;
-	u64 ts;
-	u64 cgroup_id;
-
-	pid = bpf_get_current_pid_tgid() >> 32;
-	ts = bpf_ktime_get_ns();
-	cgroup_id = bpf_get_current_cgroup_id();
-    
-	/* reserve sample from BPF ringbuf */
-	e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
-	if (!e)
-		return 0;
-
-	e->pid = pid;
-	e->type = RDMA_MONITOR_PD_DEALLOC;
-	e->cgroup_id = cgroup_id;
-	bpf_get_current_comm(&e->comm, sizeof(e->comm));
-    
-	/* successfully submit it to user-space for post-processing */
-	bpf_ringbuf_submit(e, 0);
-
-	/* Update global PD count */
 	__u32 key = 0;
-	struct resource_stats *stats = bpf_map_lookup_elem(&resource_counts, &key);
-	if (stats && stats->pd_count > 0) {
-		__sync_fetch_and_sub(&stats->pd_count, 1);
+	struct resource_stats *stats;
+	__u64 cgroup_id = get_cgroup_id();
+	struct cgroup_stats *cgroup_stats_entry;
+	struct cgroup_stats new_cgroup_stats = {};
+
+	// Update global resource count
+	stats = bpf_map_lookup_elem(&resource_counts, &key);
+	if (stats) {
+		if (stats->pd_count > 0) {
+			__sync_fetch_and_sub(&stats->pd_count, 1);
+		}
 	}
-	
-	/* Update per-cgroup statistics */
-	struct cgroup_stats *cg_stats = bpf_map_lookup_elem(&cgroup_stats, &cgroup_id);
-	if (!cg_stats) {
-		struct cgroup_stats new_cg_stats = {};
-		bpf_map_update_elem(&cgroup_stats, &cgroup_id, &new_cg_stats, BPF_ANY);
-		cg_stats = bpf_map_lookup_elem(&cgroup_stats, &cgroup_id);
-	}
-	
-	if (cg_stats) {
-		cg_stats->counts[RDMA_MONITOR_PD_DEALLOC]++;
+
+	// Update per-cgroup statistics
+	cgroup_stats_entry = bpf_map_lookup_elem(&cgroup_stats, &cgroup_id);
+	if (cgroup_stats_entry) {
+		cgroup_stats_entry->counts[RDMA_MONITOR_PD_DEALLOC]++;
+	} else {
+		new_cgroup_stats.counts[RDMA_MONITOR_PD_DEALLOC] = 1;
+		bpf_map_update_elem(&cgroup_stats, &cgroup_id, &new_cgroup_stats, BPF_ANY);
 	}
 
 	return 0;
 }
 
 SEC("kprobe/mlx5_ib_create_cq")
-int BPF_KPROBE(mlx5_ib_create_cq)
+int BPF_KPROBE(ib_create_cq)
 {
-
-	struct event *e;
-	pid_t pid;
-	u64 ts;
-	u64 cgroup_id;
-
-	pid = bpf_get_current_pid_tgid() >> 32;
-	ts = bpf_ktime_get_ns();
-	cgroup_id = bpf_get_current_cgroup_id();
-    
-	/* reserve sample from BPF ringbuf */
-	e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
-	if (!e)
-		return 0;
-
-	e->pid = pid;
-	e->type = RDMA_MONITOR_CQ_CREATE;
-	e->cgroup_id = cgroup_id;
-	bpf_get_current_comm(&e->comm, sizeof(e->comm));
-    
-	/* successfully submit it to user-space for post-processing */
-	bpf_ringbuf_submit(e, 0);
-
-	/* Update global CQ count */
 	__u32 key = 0;
-	struct resource_stats *stats = bpf_map_lookup_elem(&resource_counts, &key);
+	struct resource_stats *stats;
+	__u64 cgroup_id = get_cgroup_id();
+	struct cgroup_stats *cgroup_stats_entry;
+	struct cgroup_stats new_cgroup_stats = {};
+
+	// Update global resource count
+	stats = bpf_map_lookup_elem(&resource_counts, &key);
 	if (stats) {
 		__sync_fetch_and_add(&stats->cq_count, 1);
+		
+		// Check if interception is needed
+		if (should_intercept(RDMA_MONITOR_CQ_CREATE, stats->cq_count)) {
+			// Log interception event
+			char msg[] = "Intercepted CQ_CREATE due to total count";
+			bpf_printk("%s\n", msg);
+		}
 	}
-	
-	/* Update per-cgroup statistics */
-	struct cgroup_stats *cg_stats = bpf_map_lookup_elem(&cgroup_stats, &cgroup_id);
-	if (!cg_stats) {
-		struct cgroup_stats new_cg_stats = {};
-		bpf_map_update_elem(&cgroup_stats, &cgroup_id, &new_cg_stats, BPF_ANY);
-		cg_stats = bpf_map_lookup_elem(&cgroup_stats, &cgroup_id);
-	}
-	
-	if (cg_stats) {
-		cg_stats->counts[RDMA_MONITOR_CQ_CREATE]++;
+
+	// Update per-cgroup statistics
+	cgroup_stats_entry = bpf_map_lookup_elem(&cgroup_stats, &cgroup_id);
+	if (cgroup_stats_entry) {
+		cgroup_stats_entry->counts[RDMA_MONITOR_CQ_CREATE]++;
+		
+		// Check if interception is needed
+		if (should_intercept(RDMA_MONITOR_CQ_CREATE, cgroup_stats_entry->counts[RDMA_MONITOR_CQ_CREATE])) {
+			// Log interception event
+			char msg[] = "Intercepted CQ_CREATE for cgroup due to total count";
+			bpf_printk("%s %llu\n", msg, cgroup_id);
+		}
+	} else {
+		new_cgroup_stats.counts[RDMA_MONITOR_CQ_CREATE] = 1;
+		bpf_map_update_elem(&cgroup_stats, &cgroup_id, &new_cgroup_stats, BPF_ANY);
 	}
 
 	return 0;
 }
 
 SEC("kprobe/mlx5_ib_destroy_cq")
-int BPF_KPROBE(mlx5_ib_destroy_cq)
+int BPF_KPROBE(ib_destroy_cq)
 {
-
-	struct event *e;
-	pid_t pid;
-	u64 ts;
-	u64 cgroup_id;
-
-	pid = bpf_get_current_pid_tgid() >> 32;
-	ts = bpf_ktime_get_ns();
-	cgroup_id = bpf_get_current_cgroup_id();
-    
-	/* reserve sample from BPF ringbuf */
-	e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
-	if (!e)
-		return 0;
-
-	e->pid = pid;
-	e->type = RDMA_MONITOR_CQ_DESTORY;
-	e->cgroup_id = cgroup_id;
-	bpf_get_current_comm(&e->comm, sizeof(e->comm));
-    
-	/* successfully submit it to user-space for post-processing */
-	bpf_ringbuf_submit(e, 0);
-
-	/* Update global CQ count */
 	__u32 key = 0;
-	struct resource_stats *stats = bpf_map_lookup_elem(&resource_counts, &key);
-	if (stats && stats->cq_count > 0) {
-		__sync_fetch_and_sub(&stats->cq_count, 1);
+	struct resource_stats *stats;
+	__u64 cgroup_id = get_cgroup_id();
+	struct cgroup_stats *cgroup_stats_entry;
+	struct cgroup_stats new_cgroup_stats = {};
+
+	// Update global resource count
+	stats = bpf_map_lookup_elem(&resource_counts, &key);
+	if (stats) {
+		if (stats->cq_count > 0) {
+			__sync_fetch_and_sub(&stats->cq_count, 1);
+		}
 	}
-	
-	/* Update per-cgroup statistics */
-	struct cgroup_stats *cg_stats = bpf_map_lookup_elem(&cgroup_stats, &cgroup_id);
-	if (!cg_stats) {
-		struct cgroup_stats new_cg_stats = {};
-		bpf_map_update_elem(&cgroup_stats, &cgroup_id, &new_cg_stats, BPF_ANY);
-		cg_stats = bpf_map_lookup_elem(&cgroup_stats, &cgroup_id);
-	}
-	
-	if (cg_stats) {
-		cg_stats->counts[RDMA_MONITOR_CQ_DESTORY]++;
+
+	// Update per-cgroup statistics
+	cgroup_stats_entry = bpf_map_lookup_elem(&cgroup_stats, &cgroup_id);
+	if (cgroup_stats_entry) {
+		cgroup_stats_entry->counts[RDMA_MONITOR_CQ_DESTORY]++;
+	} else {
+		new_cgroup_stats.counts[RDMA_MONITOR_CQ_DESTORY] = 1;
+		bpf_map_update_elem(&cgroup_stats, &cgroup_id, &new_cgroup_stats, BPF_ANY);
 	}
 
 	return 0;
 }
 
 SEC("kprobe/mlx5_ib_reg_user_mr")
-int BPF_KPROBE(mlx5_ib_reg_user_mr, struct ib_pd *pd, u64 start, u64 length, u64 virt_addr, int access_flags)
+int BPF_KPROBE(ib_reg_user_mr, struct ib_pd *pd, u64 start, u64 length, u64 virt_addr, int access_flags)
 {
-
-	struct event *e;
-	pid_t pid;
-	u64 ts;
-	u64 cgroup_id;
-
-	pid = bpf_get_current_pid_tgid() >> 32;
-	ts = bpf_ktime_get_ns();
-	cgroup_id = bpf_get_current_cgroup_id();
-    
-	/* reserve sample from BPF ringbuf */
-	e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
-	if (!e)
-		return 0;
-
-	e->pid = pid;
-	e->type = RDMA_MONITOR_MR_REG;
-	e->cgroup_id = cgroup_id;
-	e->mr.va = virt_addr;
-	e->mr.len = length;
-	bpf_get_current_comm(&e->comm, sizeof(e->comm));
-    
-	/* successfully submit it to user-space for post-processing */
-	bpf_ringbuf_submit(e, 0);
-
-	/* Update global MR count */
 	__u32 key = 0;
-	struct resource_stats *stats = bpf_map_lookup_elem(&resource_counts, &key);
+	struct resource_stats *stats;
+	__u64 cgroup_id = get_cgroup_id();
+	struct cgroup_stats *cgroup_stats_entry;
+	struct cgroup_stats new_cgroup_stats = {};
+
+	// Update global resource count
+	stats = bpf_map_lookup_elem(&resource_counts, &key);
 	if (stats) {
 		__sync_fetch_and_add(&stats->mr_count, 1);
+		
+		// Check if interception is needed
+		if (should_intercept(RDMA_MONITOR_MR_REG, stats->mr_count)) {
+			// Log interception event
+			char msg[] = "Intercepted MR_REG due to total count";
+			bpf_printk("%s\n", msg);
+		}
 	}
-	
-	/* Update per-cgroup statistics */
-	struct cgroup_stats *cg_stats = bpf_map_lookup_elem(&cgroup_stats, &cgroup_id);
-	if (!cg_stats) {
-		struct cgroup_stats new_cg_stats = {};
-		bpf_map_update_elem(&cgroup_stats, &cgroup_id, &new_cg_stats, BPF_ANY);
-		cg_stats = bpf_map_lookup_elem(&cgroup_stats, &cgroup_id);
-	}
-	
-	if (cg_stats) {
-		cg_stats->counts[RDMA_MONITOR_MR_REG]++;
+
+	// Update per-cgroup statistics
+	cgroup_stats_entry = bpf_map_lookup_elem(&cgroup_stats, &cgroup_id);
+	if (cgroup_stats_entry) {
+		cgroup_stats_entry->counts[RDMA_MONITOR_MR_REG]++;
+		
+		// Check if interception is needed
+		if (should_intercept(RDMA_MONITOR_MR_REG, cgroup_stats_entry->counts[RDMA_MONITOR_MR_REG])) {
+			// Log interception event
+			char msg[] = "Intercepted MR_REG for cgroup due to total count";
+			bpf_printk("%s %llu\n", msg, cgroup_id);
+		}
+	} else {
+		new_cgroup_stats.counts[RDMA_MONITOR_MR_REG] = 1;
+		bpf_map_update_elem(&cgroup_stats, &cgroup_id, &new_cgroup_stats, BPF_ANY);
 	}
 
 	return 0;
 }
 
 SEC("kprobe/mlx5_ib_dereg_mr")
-int BPF_KPROBE(mlx5_ib_dereg_mr)
+int BPF_KPROBE(ib_dereg_mr)
 {
-
-	struct event *e;
-	pid_t pid;
-	u64 ts;
-	u64 cgroup_id;
-
-	pid = bpf_get_current_pid_tgid() >> 32;
-	ts = bpf_ktime_get_ns();
-	cgroup_id = bpf_get_current_cgroup_id();
-    
-	/* reserve sample from BPF ringbuf */
-	e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
-	if (!e)
-		return 0;
-
-	e->pid = pid;
-	e->type = RDMA_MONITOR_MR_DEREG;
-	e->cgroup_id = cgroup_id;
-	bpf_get_current_comm(&e->comm, sizeof(e->comm));
-    
-	/* successfully submit it to user-space for post-processing */
-	bpf_ringbuf_submit(e, 0);
-
-	/* Update global MR count */
 	__u32 key = 0;
-	struct resource_stats *stats = bpf_map_lookup_elem(&resource_counts, &key);
-	if (stats && stats->mr_count > 0) {
-		__sync_fetch_and_sub(&stats->mr_count, 1);
+	struct resource_stats *stats;
+	__u64 cgroup_id = get_cgroup_id();
+	struct cgroup_stats *cgroup_stats_entry;
+	struct cgroup_stats new_cgroup_stats = {};
+
+	// Update global resource count
+	stats = bpf_map_lookup_elem(&resource_counts, &key);
+	if (stats) {
+		if (stats->mr_count > 0) {
+			__sync_fetch_and_sub(&stats->mr_count, 1);
+		}
 	}
-	
-	/* Update per-cgroup statistics */
-	struct cgroup_stats *cg_stats = bpf_map_lookup_elem(&cgroup_stats, &cgroup_id);
-	if (!cg_stats) {
-		struct cgroup_stats new_cg_stats = {};
-		bpf_map_update_elem(&cgroup_stats, &cgroup_id, &new_cg_stats, BPF_ANY);
-		cg_stats = bpf_map_lookup_elem(&cgroup_stats, &cgroup_id);
-	}
-	
-	if (cg_stats) {
-		cg_stats->counts[RDMA_MONITOR_MR_DEREG]++;
+
+	// Update per-cgroup statistics
+	cgroup_stats_entry = bpf_map_lookup_elem(&cgroup_stats, &cgroup_id);
+	if (cgroup_stats_entry) {
+		cgroup_stats_entry->counts[RDMA_MONITOR_MR_DEREG]++;
+	} else {
+		new_cgroup_stats.counts[RDMA_MONITOR_MR_DEREG] = 1;
+		bpf_map_update_elem(&cgroup_stats, &cgroup_id, &new_cgroup_stats, BPF_ANY);
 	}
 
 	return 0;
 }
+
 SEC("kprobe/rdma_get_gid_attr")
-int BPF_KPROBE(rdma_get_gid_attr)
+int BPF_KPROBE(ib_gid_query1)
 {
+	__u64 cgroup_id = get_cgroup_id();
+	struct cgroup_stats *cgroup_stats_entry;
+	struct cgroup_stats new_cgroup_stats = {};
 
-	struct event *e;
-	pid_t pid;
-	u64 ts;
-	u64 cgroup_id;
-
-	pid = bpf_get_current_pid_tgid() >> 32;
-	ts = bpf_ktime_get_ns();
-	cgroup_id = bpf_get_current_cgroup_id();
-    
-	/* reserve sample from BPF ringbuf */
-	e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
-	if (!e)
-		return 0;
-
-	e->pid = pid;
-	e->type = RDMA_MONITOR_GID_QUERY;
-	e->cgroup_id = cgroup_id;
-	bpf_get_current_comm(&e->comm, sizeof(e->comm));
-    
-	/* successfully submit it to user-space for post-processing */
-	bpf_ringbuf_submit(e, 0);
-	
-	/* Update per-cgroup statistics */
-	struct cgroup_stats *cg_stats = bpf_map_lookup_elem(&cgroup_stats, &cgroup_id);
-	if (!cg_stats) {
-		struct cgroup_stats new_cg_stats = {};
-		bpf_map_update_elem(&cgroup_stats, &cgroup_id, &new_cg_stats, BPF_ANY);
-		cg_stats = bpf_map_lookup_elem(&cgroup_stats, &cgroup_id);
-	}
-	
-	if (cg_stats) {
-		cg_stats->counts[RDMA_MONITOR_GID_QUERY]++;
+	// Update per-cgroup statistics
+	cgroup_stats_entry = bpf_map_lookup_elem(&cgroup_stats, &cgroup_id);
+	if (cgroup_stats_entry) {
+		cgroup_stats_entry->counts[RDMA_MONITOR_GID_QUERY]++;
+	} else {
+		new_cgroup_stats.counts[RDMA_MONITOR_GID_QUERY] = 1;
+		bpf_map_update_elem(&cgroup_stats, &cgroup_id, &new_cgroup_stats, BPF_ANY);
 	}
 
 	return 0;
 }
+
 SEC("kprobe/rdma_read_gid_attr_ndev_rcu")
-int BPF_KPROBE(rdma_read_gid_attr_ndev_rcu)
+int BPF_KPROBE(ib_gid_query2)
 {
+	__u64 cgroup_id = get_cgroup_id();
+	struct cgroup_stats *cgroup_stats_entry;
+	struct cgroup_stats new_cgroup_stats = {};
 
-	struct event *e;
-	pid_t pid;
-	u64 ts;
-	u64 cgroup_id;
-
-	pid = bpf_get_current_pid_tgid() >> 32;
-	ts = bpf_ktime_get_ns();
-	cgroup_id = bpf_get_current_cgroup_id();
-    
-	/* reserve sample from BPF ringbuf */
-	e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
-	if (!e)
-		return 0;
-
-	e->pid = pid;
-	e->type = RDMA_MONITOR_GID_QUERY;
-	e->cgroup_id = cgroup_id;
-	bpf_get_current_comm(&e->comm, sizeof(e->comm));
-    
-	/* successfully submit it to user-space for post-processing */
-	bpf_ringbuf_submit(e, 0);
-	
-	/* Update per-cgroup statistics */
-	struct cgroup_stats *cg_stats = bpf_map_lookup_elem(&cgroup_stats, &cgroup_id);
-	if (!cg_stats) {
-		struct cgroup_stats new_cg_stats = {};
-		bpf_map_update_elem(&cgroup_stats, &cgroup_id, &new_cg_stats, BPF_ANY);
-		cg_stats = bpf_map_lookup_elem(&cgroup_stats, &cgroup_id);
-	}
-	
-	if (cg_stats) {
-		cg_stats->counts[RDMA_MONITOR_GID_QUERY]++;
+	// Update per-cgroup statistics
+	cgroup_stats_entry = bpf_map_lookup_elem(&cgroup_stats, &cgroup_id);
+	if (cgroup_stats_entry) {
+		cgroup_stats_entry->counts[RDMA_MONITOR_GID_QUERY]++;
+	} else {
+		new_cgroup_stats.counts[RDMA_MONITOR_GID_QUERY] = 1;
+		bpf_map_update_elem(&cgroup_stats, &cgroup_id, &new_cgroup_stats, BPF_ANY);
 	}
 
 	return 0;
 }
-
-struct cm_send_req_args
-{
-    // size:2; signed:0;
-    __u16 common_type;
-    // size:1; signed:0;
-    __u8 common_flags;
-    // size:1; signed:0;
-    __u8 common_preempt_count;
-    // size:4; signed:1;
-    __s32 common_pid;
-
-    // size:4; signed:1;
-    __u32 cm_id;;
-    // size:8; signed:0;
-    __u32 tos;;
-    // size:8; signed:0;
-    __u32 qp_num;
-    // size:28; signed:0;
-	__u8 srcaddr[28];
-    // size:28; signed:0;
-	__u8 dstaddr[28];
-
-};
 
 SEC("tracepoint/rdma_cma/cm_send_req")
-int tracepoint__rdma_cma__cm_send_req(struct cm_send_req_args *ctx)
+int BPF_PROG(cm_send_req, u64 cm_id, u64 qp, u64 srcaddr, u64 dstaddr)
 {
+	__u64 cgroup_id = get_cgroup_id();
+	struct cgroup_stats *cgroup_stats_entry;
+	struct cgroup_stats new_cgroup_stats = {};
 
-	struct event *e;
-	pid_t pid;
-	u64 ts;
-	u64 cgroup_id;
-
-	pid = bpf_get_current_pid_tgid() >> 32;
-	ts = bpf_ktime_get_ns();
-	cgroup_id = bpf_get_current_cgroup_id();
-    
-	/* reserve sample from BPF ringbuf */
-	e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
-	if (!e)
-		return 0;
-
-	e->pid = pid;
-	e->type = RDMA_MONITOR_CM_SEND_REQ;
-	e->cgroup_id = cgroup_id;
-	bpf_probe_read(&e->cm.cm_id, sizeof(e->cm.cm_id), &ctx->cm_id);
-	bpf_probe_read(&e->cm.qpn, sizeof(e->cm.qpn), &ctx->qp_num);
-	bpf_probe_read_str(&e->cm.srcaddr, 28, &ctx->srcaddr);
-	bpf_probe_read_str(&e->cm.dstaddr, 28, &ctx->dstaddr);
-	// bpf_printk("fmt: src: %c %c %c", ctx->dstaddr[1],ctx->dstaddr[2],ctx->dstaddr[3]);
-	bpf_get_current_comm(&e->comm, sizeof(e->comm));
-    
-	/* successfully submit it to user-space for post-processing */
-	bpf_ringbuf_submit(e, 0);
-	
-	/* Update per-cgroup statistics */
-	struct cgroup_stats *cg_stats = bpf_map_lookup_elem(&cgroup_stats, &cgroup_id);
-	if (!cg_stats) {
-		struct cgroup_stats new_cg_stats = {};
-		bpf_map_update_elem(&cgroup_stats, &cgroup_id, &new_cg_stats, BPF_ANY);
-		cg_stats = bpf_map_lookup_elem(&cgroup_stats, &cgroup_id);
-	}
-	
-	if (cg_stats) {
-		cg_stats->counts[RDMA_MONITOR_CM_SEND_REQ]++;
+	// Update per-cgroup statistics
+	cgroup_stats_entry = bpf_map_lookup_elem(&cgroup_stats, &cgroup_id);
+	if (cgroup_stats_entry) {
+		cgroup_stats_entry->counts[RDMA_MONITOR_CM_SEND_REQ]++;
+	} else {
+		new_cgroup_stats.counts[RDMA_MONITOR_CM_SEND_REQ] = 1;
+		bpf_map_update_elem(&cgroup_stats, &cgroup_id, &new_cgroup_stats, BPF_ANY);
 	}
 
 	return 0;

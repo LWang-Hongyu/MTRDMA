@@ -1,0 +1,34 @@
+# RDMA Control Verbs Interception Configuration
+# Format: VERB_NAME MAX_FREQUENCY MAX_TOTAL_COUNT
+# Use 0 to disable check for either frequency or total count
+# Supported verbs:
+# QP_CREATE, QP_MODIFY, QP_DESTROY
+# PD_ALLOC, PD_DEALLOC
+# CQ_CREATE, CQ_DESTROY
+# MR_REG, MR_DEREG
+# CM_SEND_REQ
+# GID_QUERY
+#
+# Interception Logic:
+# - If MAX_FREQUENCY > 0 and current frequency > MAX_FREQUENCY: INTERCEPT
+# - If MAX_TOTAL_COUNT > 0 and total count > MAX_TOTAL_COUNT: INTERCEPT
+# - If both conditions are met: INTERCEPT
+# - If both are 0: No interception for this verb
+
+# Examples:
+# QP_CREATE 100 1000     # Intercept if QP creation rate > 100/s OR total QP creations > 1000
+# MR_REG 0 5000          # Intercept only if total MR registrations > 5000 (ignore frequency)
+# CQ_CREATE 50 0         # Intercept only if CQ creation rate > 50/s (ignore total count)
+# PD_ALLOC 0 0           # No interception for PD allocation
+
+QP_CREATE 100 1000
+QP_MODIFY 200 2000
+QP_DESTROY 100 1000
+PD_ALLOC 50 500
+PD_DEALLOC 50 500
+CQ_CREATE 100 1000
+CQ_DESTROY 100 1000
+MR_REG 200 5000
+MR_DEREG 200 5000
+CM_SEND_REQ 50 500
+GID_QUERY 100 1000

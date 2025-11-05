@@ -6,6 +6,7 @@
 #define TASK_COMM_LEN 16
 #define MAX_FILENAME_LEN 127
 #define MAX_CGROUPS 64
+#define MAX_VERBS 11
 
 enum rdma_monitor_type {
 	RDMA_MONITOR_QP_CREATE,
@@ -20,6 +21,21 @@ enum rdma_monitor_type {
 	RDMA_MONITOR_CM_SEND_REQ,
 	RDMA_MONITOR_GID_QUERY,
 	RDMA_MONITOR_TYPE_MAX,
+};
+
+// Verb names for configuration matching
+static const char *rdma_verb_names[MAX_VERBS] = {
+	"QP_CREATE",
+	"QP_MODIFY", 
+	"QP_DESTROY",
+	"PD_ALLOC",
+	"PD_DEALLOC",
+	"CQ_CREATE",
+	"CQ_DESTROY",
+	"MR_REG",
+	"MR_DEREG",
+	"CM_SEND_REQ",
+	"GID_QUERY"
 };
 
 static inline char *rdma_monitor_tpye_str(enum rdma_monitor_type type)
@@ -63,6 +79,12 @@ struct resource_stats {
 // Structure for tracking per-cgroup statistics
 struct cgroup_stats {
 	__u64 counts[RDMA_MONITOR_TYPE_MAX];
+};
+
+// Structure for interception thresholds
+struct interception_config {
+	__u64 max_frequency[RDMA_MONITOR_TYPE_MAX];   // Max calls per second, 0 to disable
+	__u64 max_total_count[RDMA_MONITOR_TYPE_MAX]; // Max total calls, 0 to disable
 };
 
 union ibv_gid {
